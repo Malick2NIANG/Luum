@@ -1,0 +1,574 @@
+// ============================================================
+//  LUUM — Schéma Prisma
+//  "Le marché de la diaspora sénégalaise"
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+//  AUTH (better-auth)
+// ============================================================
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  phone        String   @unique
+  name         String
+  avatar       String?
+  emailVerified Boolean @default(false)
+  phoneVerified Boolean @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // better-auth relations
+  sessions     Session[]
+  accounts     Account[]
+
+  // Rôles
+  roles        UserRole[]
+
+  // Profils métier
+  merchant     Merchant?
+  gp           GP?
+
+  // Relations
+  orders           Order[]         @relation("ClientOrders")
+  sentMessages     Message[]       @relation("SentMessages")
+  notifications    Notification[]
+  reviewsGiven     Review[]        @relation("ReviewsGiven")
+  reviewsReceived  Review[]        @relation("ReviewsReceived")
+  disputes         Dispute[]       @relation("DisputeReporter")
+  payments         Payment[]       @relation("PaymentRecipient")
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("sessions")
+}
+
+model Account {
+  id           String  @id @default(cuid())
+  userId       String
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider     String
+  providerId   String
+  accessToken  String?
+  refreshToken String?
+  expiresAt    DateTime?
+  password     String? // hashed credential password (better-auth emailAndPassword)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([provider, providerId])
+  @@map("accounts")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("verifications")
+}
+
+// ============================================================
+//  RÔLES
+// ============================================================
+
+enum RoleType {
+  CLIENT
+  MERCHANT
+  GP
+  ADMIN
+}
+
+model UserRole {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      RoleType
+  createdAt DateTime @default(now())
+
+  @@unique([userId, role])
+  @@map("user_roles")
+}
+
+// ============================================================
+//  PROFIL COMMERÇANT
+// ============================================================
+
+model Merchant {
+  id          String  @id @default(cuid())
+  userId      String  @unique
+  user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  shopName    String
+  description String?
+  address     String
+  city        String  @default("Dakar")
+  country     String  @default("SN")
+
+  // KYC
+  idDocumentUrl  String?
+  isKycVerified  Boolean  @default(false)
+  isApproved     Boolean  @default(false)
+  rejectionNote  String?
+
+  // Paiement (Wave/OM)
+  payoutMethod   String?  // "wave" | "orange_money" | "bank"
+  payoutAccount  String?  // numéro de compte
+
+  // Stats
+  rating         Float    @default(0)
+  totalReviews   Int      @default(0)
+
+  products    Product[]
+  orderItems  OrderItem[]
+  packages    Package[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("merchants")
+}
+
+// ============================================================
+//  PROFIL GP
+// ============================================================
+
+model GP {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // KYC
+  idDocumentUrl  String?
+  isKycVerified  Boolean @default(false)
+  isApproved     Boolean @default(false)
+  rejectionNote  String?
+
+  // Période d'essai : capacité limitée jusqu'à 5 voyages validés
+  totalTrips       Int   @default(0)
+  maxWeightPerTrip Float @default(5) // kg, augmente avec l'expérience
+
+  // Paiement
+  payoutMethod  String? // "wave" | "orange_money" | "bank" | "stripe"
+  payoutAccount String?
+
+  // Stats
+  rating        Float @default(0)
+  totalReviews  Int   @default(0)
+
+  trips    Trip[]
+  packages Package[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("gps")
+}
+
+// ============================================================
+//  PRODUITS
+// ============================================================
+
+model Product {
+  id          String   @id @default(cuid())
+  merchantId  String
+  merchant    Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+  price       Float    // en XOF (FCFA)
+  priceEur    Float?   // converti automatiquement
+  weight      Float    // poids estimé en kg
+  images      String[] // URLs Cloudflare R2
+  category    String?
+  isAvailable Boolean  @default(true)
+
+  orderItems  OrderItem[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([merchantId, isAvailable])
+  @@map("products")
+}
+
+// ============================================================
+//  TRAJETS GP
+// ============================================================
+
+enum TripStatus {
+  UPCOMING      // pas encore parti
+  COLLECTING    // en attente des colis
+  IN_TRANSIT    // en voyage
+  COMPLETED
+  CANCELLED
+}
+
+model Trip {
+  id          String     @id @default(cuid())
+  gpId        String
+  gp          GP         @relation(fields: [gpId], references: [id], onDelete: Cascade)
+
+  originCity    String   // ex: "Dakar"
+  originCountry String   @default("SN")
+  destCity      String   // ex: "Paris"
+  destCountry   String   // ex: "FR"
+
+  departureDate DateTime
+  arrivalDate   DateTime?
+
+  pricePerKg  Float      // en EUR
+  maxWeight   Float      // kg disponibles au total
+  usedWeight  Float      @default(0) // mis à jour à chaque colis accepté
+
+  status      TripStatus @default(UPCOMING)
+
+  // KYC voyage
+  flightTicketUrl String?
+
+  packages    Package[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([destCity, destCountry, departureDate, status])
+  @@map("trips")
+}
+
+// ============================================================
+//  COMMANDES
+// ============================================================
+
+enum OrderStatus {
+  PENDING       // client a sélectionné produits, pas encore payé
+  CONFIRMED     // paiement escrow effectué, GP notifié
+  COLLECTING    // marchands envoient les colis au GP
+  IN_TRANSIT    // GP en voyage
+  DELIVERED     // client a confirmé réception
+  CANCELLED
+  DISPUTED
+  REFUNDED
+}
+
+model Order {
+  id       String      @id @default(cuid())
+  clientId String
+  client   User        @relation("ClientOrders", fields: [clientId], references: [id])
+
+  status   OrderStatus @default(PENDING)
+
+  // Montants
+  subtotalEur    Float  // somme produits convertis
+  shippingEur    Float  // frais GP (poids × prix/kg)
+  platformFeeEur Float  // commission Luum (~6%)
+  totalEur       Float  // total payé par le client
+
+  // Livraison
+  deliveryAddress String
+  deliveryCity    String
+  deliveryCountry String
+
+  items     OrderItem[]
+  packages  Package[]
+  payments  Payment[]
+  chat      Chat?
+  dispute   Dispute?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clientId, status])
+  @@map("orders")
+}
+
+// ============================================================
+//  ARTICLES DE COMMANDE
+// ============================================================
+
+enum ItemStatus {
+  PENDING
+  PREPARING
+  HANDED_TO_GP
+  IN_TRANSIT
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+model OrderItem {
+  id         String     @id @default(cuid())
+  orderId    String
+  order      Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product    @relation(fields: [productId], references: [id])
+  merchantId String
+  merchant   Merchant   @relation(fields: [merchantId], references: [id])
+  packageId  String?
+  package    Package?   @relation(fields: [packageId], references: [id])
+
+  quantity  Int
+  unitPrice Float      // prix en EUR au moment de la commande
+  weight    Float      // poids en kg
+  status    ItemStatus @default(PENDING)
+
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@map("order_items")
+}
+
+// ============================================================
+//  COLIS (lien entre une commande et un GP)
+// ============================================================
+
+enum PackageStatus {
+  AWAITING_DROPOFF   // marchand n'a pas encore envoyé
+  DROPPED_OFF        // marchand a envoyé un livreur
+  RECEIVED_BY_GP     // GP a confirmé réception
+  IN_TRANSIT
+  DELIVERED
+  REFUSED            // GP a refusé ce colis
+  CANCELLED
+}
+
+model Package {
+  id         String        @id @default(cuid())
+  orderId    String
+  order      Order         @relation(fields: [orderId], references: [id])
+  gpId       String
+  gp         GP            @relation(fields: [gpId], references: [id])
+  tripId     String
+  trip       Trip          @relation(fields: [tripId], references: [id])
+  merchantId String
+  merchant   Merchant      @relation(fields: [merchantId], references: [id])
+
+  status     PackageStatus @default(AWAITING_DROPOFF)
+  weight     Float         // poids total du colis
+
+  // Photos obligatoires à chaque étape
+  prepPhotoUrl      String? // par le marchand
+  receptionPhotoUrl String? // par le GP à la réception
+  deliveryPhotoUrl  String? // à la livraison
+
+  refusalReason String? // si REFUSED
+
+  items      OrderItem[]
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([tripId, status])
+  @@map("packages")
+}
+
+// ============================================================
+//  PAIEMENTS & ESCROW
+// ============================================================
+
+enum PaymentType {
+  ESCROW_HOLD      // client paye → fonds bloqués
+  MERCHANT_PAYOUT  // libération vers le marchand (FCFA)
+  GP_PAYOUT        // libération vers le GP (EUR)
+  PLATFORM_FEE     // commission Luum
+  REFUND
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  orderId     String
+  order       Order         @relation(fields: [orderId], references: [id])
+
+  type        PaymentType
+  status      PaymentStatus @default(PENDING)
+
+  amount      Float
+  currency    String        // "EUR" | "XOF"
+
+  recipientId String?
+  recipient   User?         @relation("PaymentRecipient", fields: [recipientId], references: [id])
+
+  // Références externes
+  stripeId    String?       // Stripe PaymentIntent ou Transfer ID
+  waveRef     String?       // Wave reference
+  omRef       String?       // Orange Money reference
+
+  metadata    Json?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([orderId, type])
+  @@map("payments")
+}
+
+// ============================================================
+//  CHAT & MESSAGES
+// ============================================================
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VOICE  // 🎙️ message vocal
+  FILE
+}
+
+model Chat {
+  id      String    @id @default(cuid())
+  orderId String    @unique
+  order   Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  messages Message[]
+
+  createdAt DateTime @default(now())
+
+  @@map("chats")
+}
+
+model Message {
+  id       String      @id @default(cuid())
+  chatId   String
+  chat     Chat        @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  senderId String
+  sender   User        @relation("SentMessages", fields: [senderId], references: [id])
+
+  type     MessageType @default(TEXT)
+  content  String?     // texte
+  fileUrl  String?     // URL R2 (image / vocal / fichier)
+  duration Int?        // durée en secondes pour les vocaux
+  isRead   Boolean     @default(false)
+
+  createdAt DateTime   @default(now())
+
+  @@index([chatId, createdAt])
+  @@map("messages")
+}
+
+// ============================================================
+//  AVIS & NOTES
+// ============================================================
+
+enum ReviewType {
+  CLIENT_TO_GP
+  CLIENT_TO_MERCHANT
+  GP_TO_CLIENT
+  GP_TO_MERCHANT
+  MERCHANT_TO_GP
+}
+
+model Review {
+  id         String     @id @default(cuid())
+  orderId    String
+  reviewerId String
+  reviewer   User       @relation("ReviewsGiven", fields: [reviewerId], references: [id])
+  revieweeId String
+  reviewee   User       @relation("ReviewsReceived", fields: [revieweeId], references: [id])
+
+  type       ReviewType
+  rating     Int        // 1 à 5
+  comment    String?
+
+  createdAt  DateTime   @default(now())
+
+  @@unique([orderId, reviewerId, revieweeId])
+  @@map("reviews")
+}
+
+// ============================================================
+//  NOTIFICATIONS
+// ============================================================
+
+enum NotifType {
+  ORDER_CONFIRMED
+  PACKAGE_HANDED_TO_GP
+  PACKAGE_RECEIVED_BY_GP
+  GP_IN_TRANSIT
+  ORDER_DELIVERED
+  NEW_MESSAGE
+  PAYMENT_RELEASED
+  GP_CANCELLED_TRIP
+  PACKAGE_REFUSED
+  KYC_APPROVED
+  KYC_REJECTED
+  DISPUTE_OPENED
+  DISPUTE_RESOLVED
+}
+
+model Notification {
+  id      String    @id @default(cuid())
+  userId  String
+  user    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type    NotifType
+  title   String
+  body    String
+  data    Json?     // données contextuelles (orderId, packageId...)
+  isRead  Boolean   @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+// ============================================================
+//  LITIGES
+// ============================================================
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED_CLIENT   // remboursement client
+  RESOLVED_MERCHANT // paiement marchand confirmé
+  CLOSED
+}
+
+model Dispute {
+  id         String        @id @default(cuid())
+  orderId    String        @unique
+  order      Order         @relation(fields: [orderId], references: [id])
+  reporterId String
+  reporter   User          @relation("DisputeReporter", fields: [reporterId], references: [id])
+
+  reason      String
+  description String
+  status      DisputeStatus @default(OPEN)
+  resolution  String?
+  resolvedAt  DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("disputes")
+}

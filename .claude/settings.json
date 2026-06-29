@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git config *)",
+      "Bash(gh --version)",
+      "Bash(git ls-remote *)",
+      "Bash(git --version)",
+      "Bash(cd \"c:\\\\Users\\\\HP\\\\Desktop\\\\Projects\\\\Luum\\\\Code\\\\Frontend\" && rm -rf .git && echo removed)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\HP\\Desktop\\Projects\\Luum\\Code\\Frontend\\.git"
+    ]
+  }
+}
