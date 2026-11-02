@@ -1,0 +1,60 @@
+name: Luum CI
+
+"on":
+  pull_request:
+    branches:
+      - develop
+      - staging
+      - preprod
+      - main
+  push:
+    branches:
+      - develop
+      - staging
+      - preprod
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Backend/package-lock.json
+      - name: Install dependencies
+        working-directory: Backend
+        run: npm ci
+      - name: Generate Prisma client
+        working-directory: Backend
+        run: npx prisma generate
+      - name: Build backend
+        working-directory: Backend
+        run: npm run build
+
+  frontend:
+    name: Frontend Android export
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: Frontend
+        run: npm ci
+      - name: Export Android build
+        working-directory: Frontend
+        run: npm run build
